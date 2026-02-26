@@ -1,0 +1,21 @@
+{
+  "dnsPort": 2053,
+  "bindAddr": "127.0.0.1",
+  "dashboardPort": 9090,
+  "dashboardOn": true,
+  "dohPort": 8080,
+  "dotPort": 853,
+  "certFile": "cert.pem",
+  "keyFile": "key.pem",
+  "autoTLS": true,
+  "blocklistEnabled": true,
+  "blocklistUrls": [
+    "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
+    "https://adaway.org/hosts.txt"
+  ],
+  "blocklistFile": "blocklist.txt",
+  "cacheEnabled": true,
+  "cacheMaxEntries": 10000,
+  "queryLogSize": 1000,
+  "statsInterval": 30
+}

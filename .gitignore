@@ -1,0 +1,26 @@
+# Build
+ceky-resolver.exe
+ceky-resolver.exe~
+*.exe
+*.exe~
+
+# TLS (otomatik üretilir)
+cert.pem
+key.pem
+
+# Runtime
+config.json
+dns_backup.json
+blocklist.txt
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
