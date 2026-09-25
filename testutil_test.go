@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/binary"
 	"fmt"
+	"math/rand/v2"
 	"net"
 	"strings"
 	"sync/atomic"
@@ -151,40 +152,27 @@ func (m *mockServer) close() {
 	m.tcp.Close()
 }
 
-// startMockServers — hepsi aynı portta, farklı loopback IP'lerinde
+// startMockServers — hepsi aynı portta, farklı loopback IP'lerinde.
+//
+// Port, işletim sisteminin verdiği geçici port yerine geniş bir aralıktan rastgele
+// seçilir: Windows geçici portları neredeyse sıralı dağıtır ve CI makinelerinde
+// Hyper-V/WinNAT TCP için yüzlük port blokları ayırır (excluded port range).
+// Geçici port böyle bir bloğa denk gelince ardışık tüm denemeler aynı blokta kalıp
+// başarısız oluyordu.
 func startMockServers(t *testing.T, handlers map[string]func(DNSQuestion) *mockReply) (string, map[string]*mockServer) {
 	t.Helper()
-	for attempt := 0; attempt < 20; attempt++ {
-		probe, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.2")})
-		if err != nil {
-			t.Skipf("127.0.0.2 kullanılamıyor: %v", err)
-		}
-		port := probe.LocalAddr().(*net.UDPAddr).Port
-		probe.Close()
+	probe, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.2")})
+	if err != nil {
+		t.Skipf("127.0.0.2 kullanılamıyor: %v", err) // ör. macOS'ta yalnızca 127.0.0.1 tanımlıdır
+	}
+	probe.Close()
 
-		servers := make(map[string]*mockServer)
-		ok := true
-		for ip, h := range handlers {
-			addr := net.JoinHostPort(ip, fmt.Sprint(port))
-			udpAddr, _ := net.ResolveUDPAddr("udp", addr)
-			u, err1 := net.ListenUDP("udp", udpAddr)
-			l, err2 := net.Listen("tcp", addr)
-			if err1 != nil || err2 != nil {
-				if u != nil {
-					u.Close()
-				}
-				if l != nil {
-					l.Close()
-				}
-				ok = false
-				break
-			}
-			servers[ip] = &mockServer{ip: ip, handler: h, udp: u, tcp: l}
-		}
-		if !ok {
-			for _, s := range servers {
-				s.close()
-			}
+	var lastErr error
+	for attempt := 0; attempt < 100; attempt++ {
+		port := 20000 + rand.IntN(25000)
+		servers, err := bindMockServers(handlers, port)
+		if err != nil {
+			lastErr = err
 			continue
 		}
 		for _, s := range servers {
@@ -197,8 +185,37 @@ func startMockServers(t *testing.T, handlers map[string]func(DNSQuestion) *mockR
 		})
 		return fmt.Sprint(port), servers
 	}
-	t.Fatal("sahte sunucular için ortak port bulunamadı")
+	t.Fatalf("sahte sunucular için ortak port bulunamadı (son hata: %v)", lastErr)
 	return "", nil
+}
+
+// bindMockServers — tüm adreslerde aynı porta UDP+TCP bağlan; biri olmazsa hepsini kapat
+func bindMockServers(handlers map[string]func(DNSQuestion) *mockReply, port int) (map[string]*mockServer, error) {
+	servers := make(map[string]*mockServer)
+	fail := func(err error) (map[string]*mockServer, error) {
+		for _, s := range servers {
+			s.close()
+		}
+		return nil, err
+	}
+	for ip, h := range handlers {
+		addr := net.JoinHostPort(ip, fmt.Sprint(port))
+		udpAddr, err := net.ResolveUDPAddr("udp", addr)
+		if err != nil {
+			return fail(err)
+		}
+		u, err := net.ListenUDP("udp", udpAddr)
+		if err != nil {
+			return fail(err)
+		}
+		l, err := net.Listen("tcp", addr)
+		if err != nil {
+			u.Close()
+			return fail(err)
+		}
+		servers[ip] = &mockServer{ip: ip, handler: h, udp: u, tcp: l}
+	}
+	return servers, nil
 }
 
 func under(name, zone string) bool {
