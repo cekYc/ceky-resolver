@@ -42,17 +42,18 @@ type Answer struct {
 
 // Resolver — kök sunuculardan başlayan, hiçbir aracı DNS'e bağlı olmayan çözümleyici
 type Resolver struct {
-	roots      []string
-	port       string
-	udpTimeout time.Duration
-	tcpTimeout time.Duration
-	cache      *DNSCache
-	zones      *zoneCache
-	metrics    *ResolverMetrics
-	flight     flightGroup
-	forceTCP   atomic.Bool // İSS UDP/53'e müdahale ediyorsa TCP kullanılır
-	verbose    bool
-	trace      func(TraceStep)
+	roots       []string
+	port        string
+	serverPorts map[string]string
+	udpTimeout  time.Duration
+	tcpTimeout  time.Duration
+	cache       *DNSCache
+	zones       *zoneCache
+	metrics     *ResolverMetrics
+	flight      flightGroup
+	forceTCP    atomic.Bool // İSS UDP/53'e müdahale ediyorsa TCP kullanılır
+	verbose     bool
+	trace       func(TraceStep)
 }
 
 const (
@@ -402,6 +403,13 @@ type exchangeInfo struct {
 	dur   time.Duration
 }
 
+func (r *Resolver) serverAddr(ip string) string {
+	if port, ok := r.serverPorts[ip]; ok && port != "" {
+		return net.JoinHostPort(ip, port)
+	}
+	return net.JoinHostPort(ip, r.port)
+}
+
 // queryServer — tek bir sunucuya sorgu gönder, yanıtı doğrula
 func (r *Resolver) queryServer(ip, zone, name string, qtype uint16) (*DNSMessage, exchangeInfo, error) {
 	query := buildQuery(name, qtype)
@@ -452,7 +460,7 @@ func (r *Resolver) queryServer(ip, zone, name string, qtype uint16) (*DNSMessage
 
 // UDP ile sorgu gönder. Yanlış ID'li paketler (sahte yanıt girişimi) yok sayılır.
 func (r *Resolver) exchangeUDP(ip string, query []byte) ([]byte, error) {
-	conn, err := net.DialTimeout("udp", net.JoinHostPort(ip, r.port), r.udpTimeout)
+	conn, err := net.DialTimeout("udp", r.serverAddr(ip), r.udpTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -476,7 +484,7 @@ func (r *Resolver) exchangeUDP(ip string, query []byte) ([]byte, error) {
 
 // TCP ile sorgu gönder (DNS over TCP: 2-byte uzunluk öneki)
 func (r *Resolver) exchangeTCP(ip string, query []byte) ([]byte, error) {
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(ip, r.port), r.tcpTimeout)
+	conn, err := net.DialTimeout("tcp", r.serverAddr(ip), r.tcpTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("%s: TCP bağlantı hatası", ip)
 	}

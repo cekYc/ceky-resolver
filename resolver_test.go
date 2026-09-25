@@ -15,6 +15,19 @@ func answerIPs(ans Answer) []string {
 	return out
 }
 
+func TestServerAddrUsesOverridePort(t *testing.T) {
+	r := newResolver(nil, newDNSCache(1), nil)
+	r.port = "53"
+	r.serverPorts = map[string]string{"127.0.0.2": "15353"}
+
+	if got := r.serverAddr("127.0.0.2"); got != "127.0.0.2:15353" {
+		t.Fatalf("özel port kullanılmalı, gelen %q", got)
+	}
+	if got := r.serverAddr("127.0.0.3"); got != "127.0.0.3:53" {
+		t.Fatalf("varsayılan port kullanılmalı, gelen %q", got)
+	}
+}
+
 func TestResolveThroughHierarchy(t *testing.T) {
 	port, _ := testHierarchy(t)
 	r := testResolver(port)
