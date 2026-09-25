@@ -37,6 +37,8 @@ type mockServer struct {
 	tcp     net.Listener
 }
 
+var mockServerPorts map[string]string
+
 func rrA(name, ip string) DNSRecord {
 	return DNSRecord{Name: name, Type: typeA, Class: classIN, TTL: 300, RData: net.ParseIP(ip).To4()}
 }
@@ -195,9 +197,49 @@ func startMockServers(t *testing.T, handlers map[string]func(DNSQuestion) *mockR
 				s.close()
 			}
 		})
+		mockServerPorts = nil
 		return fmt.Sprint(port), servers
 	}
-	t.Fatal("sahte sunucular için ortak port bulunamadı")
+
+	servers := make(map[string]*mockServer)
+	ports := make(map[string]string, len(handlers))
+	for ip, h := range handlers {
+		u, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP(ip)})
+		if err != nil {
+			for _, s := range servers {
+				s.close()
+			}
+			t.Fatalf("%s için UDP sahte sunucu başlatılamadı: %v", ip, err)
+		}
+		port := u.LocalAddr().(*net.UDPAddr).Port
+		addr := net.JoinHostPort(ip, fmt.Sprint(port))
+		l, err := net.Listen("tcp", addr)
+		if err != nil {
+			u.Close()
+			for _, s := range servers {
+				s.close()
+			}
+			t.Fatalf("%s için TCP sahte sunucu başlatılamadı: %v", ip, err)
+		}
+		servers[ip] = &mockServer{ip: ip, handler: h, udp: u, tcp: l}
+		ports[ip] = fmt.Sprint(port)
+	}
+	for _, s := range servers {
+		s.serve()
+	}
+	t.Cleanup(func() {
+		for _, s := range servers {
+			s.close()
+		}
+	})
+	mockServerPorts = ports
+	if p, ok := ports["127.0.0.2"]; ok {
+		return p, servers
+	}
+	for _, p := range ports {
+		return p, servers
+	}
+	t.Fatal("sahte sunucu portu atanamadı")
 	return "", nil
 }
 
@@ -297,6 +339,19 @@ func testResolver(port string, roots ...string) *Resolver {
 	}
 	r := newResolver(roots, newDNSCache(1000), newResolverMetrics())
 	r.port = port
+	useOverrides := false
+	for _, p := range mockServerPorts {
+		if p == port {
+			useOverrides = true
+			break
+		}
+	}
+	if useOverrides {
+		r.serverPorts = make(map[string]string, len(mockServerPorts))
+		for ip, p := range mockServerPorts {
+			r.serverPorts[ip] = p
+		}
+	}
 	r.udpTimeout = 400 * time.Millisecond
 	r.tcpTimeout = time.Second
 	return r
