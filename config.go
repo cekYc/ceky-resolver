@@ -10,7 +10,9 @@ import (
 	"encoding/pem"
 	"fmt"
 	"math/big"
+	"net"
 	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -19,24 +21,37 @@ import (
 // Config — Ceky Resolver yapılandırma dosyası
 type Config struct {
 	// DNS
-	DNSPort  int    `json:"dnsPort"`  // Varsayılan: 53
-	BindAddr string `json:"bindAddr"` // Varsayılan: "127.0.0.1"
+	DNSPort            int    `json:"dnsPort"`            // Varsayılan: 53
+	BindAddr           string `json:"bindAddr"`           // Varsayılan: "127.0.0.1" (+ "::1")
+	AllowPublicClients bool   `json:"allowPublicClients"` // Yerel ağ dışından sorgu kabul et (önerilmez)
+
+	// Uygulama
+	AutoEnable      bool     `json:"autoEnable"`            // Açılışta sistem DNS'ini Ceky'ye yönlendir
+	FailSafe        bool     `json:"failSafe"`              // Kök sunuculara ulaşılamazsa eski DNS'e geçici dönüş
+	Transport       string   `json:"transport"`             // "auto" | "udp" | "tcp"
+	RootServers     []string `json:"rootServers,omitempty"` // Özel kök sunucu listesi (boş = yerleşik)
+	LocalForwarders []string `json:"localForwarders"`       // .lan / .home.arpa gibi yerel isimler için modem DNS'i
+	Verbose         bool     `json:"verbose"`               // Her çözümleme adımını konsola yaz
 
 	// Dashboard
 	DashboardPort int  `json:"dashboardPort"` // Varsayılan: 9090
 	DashboardOn   bool `json:"dashboardOn"`   // Varsayılan: true
 
 	// DoH / DoT
-	DoHPort  int    `json:"dohPort"`  // Varsayılan: 8080 (HTTP) veya 8443 (HTTPS)
-	DoTPort  int    `json:"dotPort"`  // Varsayılan: 853
-	CertFile string `json:"certFile"` // Varsayılan: "cert.pem"
-	KeyFile  string `json:"keyFile"`  // Varsayılan: "key.pem"
-	AutoTLS  bool   `json:"autoTLS"`  // Sertifika yoksa otomatik oluştur
+	DoHEnabled bool   `json:"dohEnabled"` // Varsayılan: true
+	DoTEnabled bool   `json:"dotEnabled"` // Varsayılan: true
+	DoHPort    int    `json:"dohPort"`    // Varsayılan: 8080
+	DoTPort    int    `json:"dotPort"`    // Varsayılan: 853
+	CertFile   string `json:"certFile"`   // Varsayılan: "cert.pem"
+	KeyFile    string `json:"keyFile"`    // Varsayılan: "key.pem"
+	AutoTLS    bool   `json:"autoTLS"`    // Sertifika yoksa otomatik oluştur
 
 	// Reklam Engelleme
-	BlocklistEnabled bool     `json:"blocklistEnabled"` // Varsayılan: true
-	BlocklistURLs    []string `json:"blocklistUrls"`    // Online kaynaklar
-	BlocklistFile    string   `json:"blocklistFile"`    // Yerel dosya
+	BlocklistEnabled      bool     `json:"blocklistEnabled"`      // Varsayılan: true
+	BlocklistURLs         []string `json:"blocklistUrls"`         // Online kaynaklar
+	BlocklistFile         string   `json:"blocklistFile"`         // Yerel özel engelleme listesi
+	AllowlistFile         string   `json:"allowlistFile"`         // Asla engellenmeyecek domain'ler
+	BlocklistRefreshHours int      `json:"blocklistRefreshHours"` // Listeleri yenileme aralığı
 
 	// Önbellek
 	CacheEnabled    bool `json:"cacheEnabled"`    // Varsayılan: true
@@ -54,21 +69,27 @@ func defaultConfig() Config {
 		DNSPort:  53,
 		BindAddr: "127.0.0.1",
 
+		AutoEnable:      true,
+		FailSafe:        true,
+		Transport:       "auto",
+		LocalForwarders: []string{},
+
 		DashboardPort: 9090,
 		DashboardOn:   true,
 
-		DoHPort:  8080,
-		DoTPort:  853,
-		CertFile: "cert.pem",
-		KeyFile:  "key.pem",
-		AutoTLS:  true,
+		DoHEnabled: true,
+		DoTEnabled: true,
+		DoHPort:    8080,
+		DoTPort:    853,
+		CertFile:   "cert.pem",
+		KeyFile:    "key.pem",
+		AutoTLS:    true,
 
-		BlocklistEnabled: true,
-		BlocklistURLs: []string{
-			"https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
-			"https://adaway.org/hosts.txt",
-		},
-		BlocklistFile: "blocklist.txt",
+		BlocklistEnabled:      true,
+		BlocklistURLs:         append([]string(nil), defaultBlocklistURLs...),
+		BlocklistFile:         "blocklist.txt",
+		AllowlistFile:         "allowlist.txt",
+		BlocklistRefreshHours: 24,
 
 		CacheEnabled:    true,
 		CacheMaxEntries: 10000,
@@ -81,15 +102,56 @@ func defaultConfig() Config {
 
 const configFile = "config.json"
 
+// Veri klasörü — config.json, sertifikalar, listeler burada tutulur
+var dataDir = "."
+
+// dataPath — göreli yolları veri klasörüne göre çöz
+func dataPath(p string) string {
+	if p == "" || filepath.IsAbs(p) {
+		return p
+	}
+	return filepath.Join(dataDir, p)
+}
+
+// resolveDataDir — öncelik: -data > exe yanındaki config.json (taşınabilir mod) >
+// çalışma klasöründeki config.json > sistem klasörü (yönetici) > kullanıcı klasörü
+func resolveDataDir(flagValue string) string {
+	if flagValue != "" {
+		if abs, err := filepath.Abs(flagValue); err == nil {
+			return abs
+		}
+		return flagValue
+	}
+	if exe, err := os.Executable(); err == nil {
+		dir := filepath.Dir(exe)
+		if _, err := os.Stat(filepath.Join(dir, configFile)); err == nil {
+			return dir
+		}
+	}
+	if wd, err := os.Getwd(); err == nil {
+		if _, err := os.Stat(filepath.Join(wd, configFile)); err == nil {
+			return wd
+		}
+	}
+	if isAdmin() {
+		return systemDataDir()
+	}
+	if d, err := os.UserConfigDir(); err == nil {
+		return filepath.Join(d, "ceky-resolver")
+	}
+	return "."
+}
+
 // Yapılandırma dosyasını yükle (yoksa varsayılanı oluştur)
 func loadConfig() Config {
 	cfg := defaultConfig()
+	path := dataPath(configFile)
 
-	data, err := os.ReadFile(configFile)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		// Dosya yok — varsayılanı oluştur
 		saveConfig(cfg)
-		fmt.Printf("║ 📄 Yapılandırma oluşturuldu: %s\n", configFile)
+		fmt.Printf("║ 📄 Yapılandırma oluşturuldu: %s\n", path)
 		return cfg
 	}
 
@@ -98,7 +160,20 @@ func loadConfig() Config {
 		return defaultConfig()
 	}
 
+	// Yeni sürümle gelen ayarlar dosyaya eklensin
+	saveConfig(cfg)
 	return cfg
+}
+
+// peekConfig — yapılandırmayı yalnızca oku (dosya yoksa oluşturma)
+func peekConfig() Config {
+	c := defaultConfig()
+	if data, err := os.ReadFile(dataPath(configFile)); err == nil {
+		if json.Unmarshal(data, &c) != nil {
+			return defaultConfig()
+		}
+	}
+	return c
 }
 
 // Yapılandırmayı dosyaya kaydet
@@ -107,7 +182,8 @@ func saveConfig(cfg Config) {
 	if err != nil {
 		return
 	}
-	os.WriteFile(configFile, data, 0644)
+	os.MkdirAll(dataDir, 0755)
+	os.WriteFile(dataPath(configFile), data, 0644)
 }
 
 // ==================== OTOMATİK TLS SERTİFİKA ====================
@@ -135,8 +211,8 @@ func generateSelfSignedCert(certPath, keyPath string) error {
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
 
-		DNSNames: []string{"localhost", "ceky-resolver.local"},
-		// IP adresleri
+		DNSNames:    []string{"localhost", "ceky-resolver.local"},
+		IPAddresses: []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback},
 	}
 
 	// Sertifikayı oluştur
@@ -154,7 +230,7 @@ func generateSelfSignedCert(certPath, keyPath string) error {
 	pem.Encode(certFile, &pem.Block{Type: "CERTIFICATE", Bytes: certDER})
 
 	// Anahtar dosyasını yaz
-	keyFile, err := os.Create(keyPath)
+	keyFile, err := os.OpenFile(keyPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		return err
 	}
@@ -170,8 +246,8 @@ func generateSelfSignedCert(certPath, keyPath string) error {
 
 // TLS sertifikasını kontrol et, yoksa oluştur
 func ensureTLSCerts(cfg Config) (string, string) {
-	certPath := cfg.CertFile
-	keyPath := cfg.KeyFile
+	certPath := dataPath(cfg.CertFile)
+	keyPath := dataPath(cfg.KeyFile)
 
 	// Her iki dosya da var mı?
 	_, certErr := os.Stat(certPath)

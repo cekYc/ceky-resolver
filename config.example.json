@@ -1,8 +1,16 @@
 {
-  "dnsPort": 2053,
+  "dnsPort": 53,
   "bindAddr": "127.0.0.1",
+  "allowPublicClients": false,
+  "autoEnable": true,
+  "failSafe": true,
+  "transport": "auto",
+  "localForwarders": [],
+  "verbose": false,
   "dashboardPort": 9090,
   "dashboardOn": true,
+  "dohEnabled": true,
+  "dotEnabled": true,
   "dohPort": 8080,
   "dotPort": 853,
   "certFile": "cert.pem",
@@ -14,8 +22,11 @@
     "https://adaway.org/hosts.txt"
   ],
   "blocklistFile": "blocklist.txt",
+  "allowlistFile": "allowlist.txt",
+  "blocklistRefreshHours": 24,
   "cacheEnabled": true,
   "cacheMaxEntries": 10000,
+  "cacheCleanupSec": 60,
   "queryLogSize": 1000,
   "statsInterval": 30
 }

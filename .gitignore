@@ -1,8 +1,10 @@
 # Build
+ceky-resolver
 ceky-resolver.exe
 ceky-resolver.exe~
 *.exe
 *.exe~
+dist/
 
 # TLS (otomatik üretilir)
 cert.pem
@@ -11,7 +13,12 @@ key.pem
 # Runtime
 config.json
 dns_backup.json
+sysdns_backup.json
 blocklist.txt
+allowlist.txt
+lists/
+*.log
+*.log.old
 
 # OS
 .DS_Store

@@ -73,14 +73,14 @@ func testDomain(conn *net.UDPConn, serverAddr *net.UDPAddr, domain string) {
 }
 
 func main() {
-	serverAddr, _ := net.ResolveUDPAddr("udp", "127.0.0.1:2053")
+	serverAddr, _ := net.ResolveUDPAddr("udp", "127.0.0.1:53")
 	conn, err := net.ListenUDP("udp", nil)
 	if err != nil {
 		panic(err)
 	}
 	defer conn.Close()
 
-	fmt.Println("╔══ Ceky Resolver v3.0 — Ad-Block Testi ══╗")
+	fmt.Println("╔══ Ceky Resolver — Ad-Block Testi ══╗")
 	fmt.Println()
 
 	// Normal domain'ler (çözümlenmeli)

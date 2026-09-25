@@ -1,0 +1,793 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ceky Resolver — Kontrol Paneli</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%236366f1'/%3E%3Ctext x='16' y='22' font-size='18' font-family='Arial' font-weight='bold' fill='white' text-anchor='middle'%3EC%3C/text%3E%3C/svg%3E">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#0a0e17;--card:#111827;--card2:#1a2332;--border:#1e2d3d;
+  --text:#e2e8f0;--text2:#94a3b8;--text3:#64748b;
+  --accent:#3b82f6;--accent2:#6366f1;--green:#10b981;--red:#ef4444;
+  --orange:#f59e0b;--cyan:#06b6d4;--pink:#ec4899;
+  --glow:0 0 20px rgba(59,130,246,0.15);
+  --mono:'Cascadia Code','Fira Code',ui-monospace,monospace;
+}
+body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--text);overflow-x:hidden;min-height:100vh}
+button{font:inherit;cursor:pointer}
+button:disabled{opacity:.5;cursor:not-allowed}
+
+/* Header */
+.header{background:linear-gradient(135deg,#0f172a 0%,#1e1b4b 50%,#0f172a 100%);border-bottom:1px solid var(--border);padding:14px 24px;display:flex;align-items:center;justify-content:space-between;gap:12px;position:sticky;top:0;z-index:100;backdrop-filter:blur(10px)}
+.header-left{display:flex;align-items:center;gap:12px;min-width:0}
+.logo{width:36px;height:36px;flex:none;border-radius:10px;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:bold;color:#fff;box-shadow:0 0 20px rgba(99,102,241,0.3)}
+.header h1{font-size:20px;font-weight:700;background:linear-gradient(135deg,#fff,var(--accent));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;white-space:nowrap}
+.header .version{font-size:11px;color:var(--text3);background:var(--card);padding:2px 8px;border-radius:4px;border:1px solid var(--border)}
+.header-right{display:flex;align-items:center;gap:14px}
+.live-dot{width:8px;height:8px;border-radius:50%;background:var(--green);animation:pulse 2s infinite;display:inline-block}
+.live-dot.off{background:var(--red);animation:none}
+@keyframes pulse{0%,100%{opacity:1;box-shadow:0 0 0 0 rgba(16,185,129,0.5)}50%{opacity:.7;box-shadow:0 0 0 8px rgba(16,185,129,0)}}
+.uptime{font-size:12px;color:var(--text2);font-family:var(--mono)}
+
+/* Buttons */
+.btn{border:1px solid var(--border);background:var(--card2);color:var(--text);padding:7px 14px;border-radius:8px;font-size:13px;font-weight:600;transition:background .2s,border-color .2s}
+.btn:hover:not(:disabled){border-color:var(--accent);background:#1f2b3d}
+.btn.primary{background:linear-gradient(135deg,var(--accent),var(--accent2));border-color:transparent;color:#fff}
+.btn.danger{background:rgba(239,68,68,0.12);border-color:rgba(239,68,68,0.4);color:#fca5a5}
+.btn.small{padding:3px 9px;font-size:11px;border-radius:6px}
+.btn.big{padding:14px 26px;font-size:16px;border-radius:12px;min-width:210px}
+
+/* Grid */
+.container{max-width:1400px;margin:0 auto;padding:20px}
+.hero{margin-bottom:16px}
+.stats-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:16px}
+.main-grid{display:grid;grid-template-columns:2fr 1fr;gap:16px;margin-bottom:16px}
+.bottom-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px}
+
+/* Cards */
+.card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px;position:relative;overflow:hidden;transition:border-color .3s,box-shadow .3s;min-width:0}
+.card:hover{border-color:rgba(59,130,246,0.3);box-shadow:var(--glow)}
+.card-title{font-size:11px;text-transform:uppercase;letter-spacing:1.5px;color:var(--text3);margin-bottom:12px;display:flex;align-items:center;gap:6px}
+.card-title .icon{font-size:14px}
+.card-title .spacer{flex:1}
+
+/* Protection hero */
+.protect{display:flex;align-items:center;gap:22px;flex-wrap:wrap}
+.shield{width:76px;height:76px;flex:none;border-radius:20px;display:flex;align-items:center;justify-content:center;font-size:38px;background:var(--card2);border:2px solid var(--border);transition:all .4s}
+.protect.on .shield{background:rgba(16,185,129,0.12);border-color:var(--green);box-shadow:0 0 30px rgba(16,185,129,0.25)}
+.protect.warn .shield{background:rgba(245,158,11,0.12);border-color:var(--orange)}
+.protect.off .shield{background:rgba(100,116,139,0.1)}
+.protect-text{flex:1;min-width:240px}
+.protect-title{font-size:24px;font-weight:800;margin-bottom:6px}
+.protect.on .protect-title{color:var(--green)}
+.protect.warn .protect-title{color:var(--orange)}
+.protect-sub{color:var(--text2);font-size:14px;line-height:1.5;max-width:720px}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}
+.chip{display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:6px 10px;border-radius:8px;background:var(--card2);border:1px solid var(--border);color:var(--text2)}
+.chip b{color:var(--text);font-weight:600}
+.chip.ok{border-color:rgba(16,185,129,0.35)}
+.chip.warn{border-color:rgba(245,158,11,0.45);color:#fcd34d}
+.chip.bad{border-color:rgba(239,68,68,0.45);color:#fca5a5}
+.notice{margin-top:14px;padding:10px 14px;border-radius:8px;font-size:13px;line-height:1.5;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.3);color:#fde68a;display:none}
+.notice.show{display:block}
+
+/* Switch */
+.switch{position:relative;display:inline-block;width:34px;height:19px;flex:none}
+.switch input{opacity:0;width:0;height:0}
+.slider{position:absolute;inset:0;background:#334155;border-radius:19px;transition:.25s;cursor:pointer}
+.slider:before{content:'';position:absolute;height:13px;width:13px;left:3px;top:3px;background:#fff;border-radius:50%;transition:.25s}
+.switch input:checked+.slider{background:var(--green)}
+.switch input:checked+.slider:before{transform:translateX(15px)}
+
+/* Test */
+.test-row{display:flex;gap:8px;flex-wrap:wrap}
+.input{flex:1;min-width:160px;background:var(--card2);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:8px;font-family:var(--mono);font-size:13px}
+.input:focus{outline:none;border-color:var(--accent)}
+.trace{margin-top:12px;font-size:12px;font-family:var(--mono)}
+.trace-step{display:grid;grid-template-columns:62px minmax(0,1fr) 64px;gap:8px;padding:6px 0;border-bottom:1px solid rgba(30,45,61,0.5);align-items:baseline}
+.trace-step .kind{font-weight:700;font-size:10px;text-transform:uppercase;letter-spacing:.5px}
+.trace-step .kind.root{color:var(--pink)}
+.trace-step .kind.tld{color:var(--orange)}
+.trace-step .kind.auth{color:var(--cyan)}
+.trace-step .desc{overflow-wrap:anywhere;color:var(--text2)}
+.trace-step .desc b{color:var(--text);font-weight:600}
+.trace-step .ms{text-align:right;color:var(--text3)}
+.trace-summary{margin-top:10px;font-size:13px;font-family:'Segoe UI',system-ui,sans-serif;line-height:1.5}
+
+/* Stat Cards */
+.stat-card{text-align:center}
+.stat-value{font-size:36px;font-weight:800;line-height:1;margin-bottom:4px;font-family:var(--mono)}
+.stat-sub{font-size:12px;color:var(--text2)}
+.stat-value.blue{color:var(--accent)}
+.stat-value.green{color:var(--green)}
+.stat-value.red{color:var(--red)}
+.stat-value.cyan{color:var(--cyan)}
+
+/* Chart */
+.chart-container{position:relative;height:200px;margin-top:8px}
+#qpsChart{width:100%;height:100%;display:block}
+
+/* Query Table */
+.query-table{width:100%;border-collapse:separate;border-spacing:0;font-size:12px}
+.query-table th{text-align:left;padding:8px 10px;color:var(--text3);font-weight:600;text-transform:uppercase;letter-spacing:1px;font-size:10px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--card)}
+.query-table td{padding:6px 10px;border-bottom:1px solid rgba(30,45,61,0.5);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px}
+.query-table tr:hover td{background:rgba(59,130,246,0.05)}
+.query-scroll{max-height:380px;overflow:auto;scrollbar-width:thin;scrollbar-color:var(--border) transparent}
+
+/* Status badges */
+.badge{padding:2px 8px;border-radius:4px;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.5px}
+.badge-resolved{background:rgba(16,185,129,0.15);color:var(--green)}
+.badge-blocked{background:rgba(239,68,68,0.15);color:var(--red)}
+.badge-cached{background:rgba(6,182,212,0.15);color:var(--cyan)}
+.badge-nxdomain{background:rgba(245,158,11,0.15);color:var(--orange)}
+.badge-error{background:rgba(239,68,68,0.1);color:#f87171}
+.badge-local{background:rgba(148,163,184,0.15);color:var(--text2)}
+
+/* Progress bars */
+.progress-bar{height:6px;background:var(--card2);border-radius:3px;overflow:hidden;margin-top:8px}
+.progress-fill{height:100%;border-radius:3px;transition:width .8s cubic-bezier(0.4,0,0.2,1)}
+.progress-fill.green{background:linear-gradient(90deg,var(--green),#34d399)}
+.progress-fill.red{background:linear-gradient(90deg,var(--red),#f87171)}
+
+/* Domain lists */
+.domain-list{list-style:none}
+.domain-item{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid rgba(30,45,61,0.3);font-size:12px}
+.domain-item:last-child{border:none}
+.domain-name{color:var(--text);font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.domain-count{color:var(--text2);font-weight:600;font-size:11px;background:var(--card2);padding:2px 8px;border-radius:4px;min-width:36px;text-align:center}
+.empty{color:var(--text3);font-size:12px;justify-content:center}
+
+/* Server stats */
+.server-stat{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid rgba(30,45,61,0.3)}
+.server-stat:last-child{border:none}
+.server-label{font-size:12px;color:var(--text2)}
+.server-value{font-family:var(--mono);font-size:13px;font-weight:600}
+.server-value.fast{color:var(--green)}
+.server-value.medium{color:var(--orange)}
+.server-value.slow{color:var(--red)}
+
+/* Toast */
+.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%) translateY(20px);background:#1e293b;border:1px solid var(--border);color:var(--text);padding:10px 18px;border-radius:10px;font-size:13px;opacity:0;transition:all .3s;z-index:200;max-width:calc(100% - 32px)}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+.toast.err{border-color:rgba(239,68,68,0.5)}
+
+/* Overlay (kapanınca) */
+.overlay{position:fixed;inset:0;background:rgba(10,14,23,0.92);display:none;align-items:center;justify-content:center;z-index:300;text-align:center;padding:24px}
+.overlay.show{display:flex}
+.overlay h2{font-size:22px;margin-bottom:8px}
+.overlay p{color:var(--text2);font-size:14px}
+
+@keyframes slideIn{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}
+.card{animation:slideIn .4s ease-out}
+
+/* Responsive */
+@media(max-width:1200px){.main-grid{grid-template-columns:1fr}.bottom-grid{grid-template-columns:1fr 1fr}}
+@media(max-width:768px){
+  .container{padding:16px}
+  .header{padding:12px 16px}
+  .header .version,.uptime{display:none}
+  .stats-grid{grid-template-columns:repeat(2,1fr);gap:12px}
+  .stat-value{font-size:26px}
+  .bottom-grid{grid-template-columns:1fr}
+  .bottom-grid .card[style*="span 2"]{grid-column:auto!important}
+  .protect-title{font-size:20px}
+  .btn.big{width:100%}
+}
+</style>
+</head>
+<body>
+
+<header class="header">
+  <div class="header-left">
+    <div class="logo">C</div>
+    <h1>Ceky Resolver</h1>
+    <span class="version">v{{CEKY_VERSION}}</span>
+  </div>
+  <div class="header-right">
+    <span class="live-dot" id="liveDot" title="Bağlantı"></span>
+    <span class="uptime" id="uptime">—</span>
+    <button class="btn small danger" id="quitBtn" style="display:none" title="Uygulamayı kapat ve DNS ayarlarını geri yükle">Çıkış</button>
+  </div>
+</header>
+
+<div class="container">
+
+<!-- KORUMA -->
+<div class="card hero">
+  <div class="protect off" id="protect">
+    <div class="shield" id="shieldIcon">🛡️</div>
+    <div class="protect-text">
+      <div class="protect-title" id="protectTitle">Durum alınıyor…</div>
+      <div class="protect-sub" id="protectSub">Ceky Resolver, alan adlarını Google, Cloudflare veya internet sağlayıcınızın DNS'ine sormadan doğrudan kök sunuculardan başlayarak kendisi çözer.</div>
+    </div>
+    <button class="btn big primary" id="protectBtn" disabled>…</button>
+  </div>
+  <div class="chips">
+    <span class="chip" id="chipNet">🌐 Kök sunucular: <b>kontrol ediliyor</b></span>
+    <span class="chip" id="chipDNS">🖥️ Sistem DNS'i: <b>—</b></span>
+    <label class="chip" id="chipAds" title="Reklam ve takipçi alan adlarını engelle">
+      <span class="switch"><input type="checkbox" id="adsToggle"><span class="slider"></span></span>
+      Reklam engelleme <b id="adsRules"></b>
+    </label>
+    <span class="chip" id="chipService">⚙️ Kalıcı kurulum: <b>—</b></span>
+    <button class="btn small" id="installBtn" style="display:none" title="Bilgisayar açıldığında arka planda otomatik başlasın">Kalıcı Kur</button>
+  </div>
+  <div class="notice" id="notice"></div>
+</div>
+
+<!-- STAT CARDS -->
+<div class="stats-grid">
+  <div class="card stat-card">
+    <div class="card-title"><span class="icon">📊</span> Toplam Sorgu</div>
+    <div class="stat-value blue" id="totalQueries">0</div>
+    <div class="stat-sub" id="qps">0 sorgu/sn</div>
+  </div>
+  <div class="card stat-card">
+    <div class="card-title"><span class="icon">⚡</span> Ort. Yanıt</div>
+    <div class="stat-value cyan" id="avgMs">0</div>
+    <div class="stat-sub">milisaniye</div>
+  </div>
+  <div class="card stat-card">
+    <div class="card-title"><span class="icon">🛡️</span> Engellenen</div>
+    <div class="stat-value red" id="blockedCount">0</div>
+    <div class="stat-sub" id="blockRate">%0 engelleme oranı</div>
+  </div>
+  <div class="card stat-card">
+    <div class="card-title"><span class="icon">💾</span> Önbellek İsabeti</div>
+    <div class="stat-value green" id="cacheHitRate">0%</div>
+    <div class="stat-sub" id="cacheSub">0 kayıt</div>
+  </div>
+</div>
+
+<!-- CHART + TEST -->
+<div class="main-grid">
+  <div class="card">
+    <div class="card-title"><span class="icon">📈</span> Sorgu Trafiği (Canlı)</div>
+    <div class="chart-container"><canvas id="qpsChart"></canvas></div>
+
+    <div class="card-title" style="margin-top:20px"><span class="icon">🔎</span> Bağlantı Testi — bir alan adının kökten nasıl çözüldüğünü görün</div>
+    <form class="test-row" id="testForm">
+      <input class="input" id="testDomain" placeholder="ör. wikipedia.org" value="example.com" autocomplete="off" spellcheck="false">
+      <button class="btn primary" id="testBtn" type="submit">Test Et</button>
+    </form>
+    <div class="trace" id="trace"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-title"><span class="icon">🌐</span> Sunucu Performansı</div>
+    <div>
+      <div class="server-stat"><span class="server-label">Kök Sunucu</span><span class="server-value" id="rootMs">—</span></div>
+      <div class="server-stat"><span class="server-label">TLD Sunucu</span><span class="server-value" id="tldMs">—</span></div>
+      <div class="server-stat"><span class="server-label">Yetkili Sunucu</span><span class="server-value" id="authMs">—</span></div>
+    </div>
+
+    <div style="margin-top:20px">
+      <div class="card-title"><span class="icon">📊</span> Önbellek Durumu <span class="spacer"></span><button class="btn small" id="flushBtn">Temizle</button></div>
+      <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px">
+        <span style="color:var(--text2)">İsabet Oranı</span>
+        <span style="color:var(--green);font-weight:600" id="hitRateLabel">0%</span>
+      </div>
+      <div class="progress-bar"><div class="progress-fill green" id="hitRateBar" style="width:0%"></div></div>
+
+      <div style="display:flex;justify-content:space-between;font-size:12px;margin-top:12px;margin-bottom:4px">
+        <span style="color:var(--text2)">Engelleme Oranı</span>
+        <span style="color:var(--red);font-weight:600" id="blockRateLabel">0%</span>
+      </div>
+      <div class="progress-bar"><div class="progress-fill red" id="blockRateBar" style="width:0%"></div></div>
+
+      <div style="margin-top:16px;display:flex;flex-wrap:wrap;gap:12px 16px;font-size:11px;color:var(--text3)">
+        <div>🧩 Kural: <span style="color:var(--text)" id="blockRules">0</span></div>
+        <div>📦 Önbellek: <span style="color:var(--text)" id="cacheEntries">0</span></div>
+        <div>👥 Canlı: <span style="color:var(--text)" id="liveClients">0</span></div>
+      </div>
+      <div style="margin-top:14px;font-size:11px;color:var(--text3);line-height:1.6" id="listenInfo"></div>
+    </div>
+  </div>
+</div>
+
+<!-- BOTTOM GRID -->
+<div class="bottom-grid">
+  <div class="card" style="grid-column:span 2">
+    <div class="card-title"><span class="icon">📋</span> Son Sorgular (Canlı)</div>
+    <div class="query-scroll">
+      <table class="query-table">
+        <thead><tr><th>Zaman</th><th>Domain</th><th>Tip</th><th>Durum</th><th>Yanıt</th><th>Süre</th><th></th></tr></thead>
+        <tbody id="queryBody"><tr><td colspan="7" style="color:var(--text3);text-align:center;padding:24px">Henüz sorgu yok — koruma açıldığında tarayıcınızın sorguları burada görünür.</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title"><span class="icon">🏆</span> En Çok Sorgulanan</div>
+    <ul class="domain-list" id="topDomains"></ul>
+
+    <div class="card-title" style="margin-top:20px"><span class="icon">🚫</span> En Çok Engellenen</div>
+    <ul class="domain-list" id="topBlocked"></ul>
+
+    <div class="card-title" style="margin-top:20px"><span class="icon">✅</span> İzin Listesi</div>
+    <form class="test-row" id="allowForm">
+      <input class="input" id="allowDomain" placeholder="engellenmesin: ör. site.com" autocomplete="off" spellcheck="false">
+      <button class="btn small" type="submit">Ekle</button>
+    </form>
+    <ul class="domain-list" id="allowList" style="margin-top:8px"></ul>
+  </div>
+</div>
+
+</div>
+
+<div class="toast" id="toast"></div>
+<div class="overlay" id="overlay"><div><h2 id="overlayTitle">Ceky Resolver kapatıldı</h2><p id="overlayText">DNS ayarlarınız eski haline getirildi. Bu sekmeyi kapatabilirsiniz.</p></div></div>
+
+<script>
+// ==================== DASHBOARD JS ====================
+const TOKEN = '{{CEKY_TOKEN}}';
+const $ = id => document.getElementById(id);
+let state = null;
+
+// Escape HTML
+function escHtml(s) {
+  if (s === undefined || s === null) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+function toast(msg, isErr) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.className = 'toast show' + (isErr ? ' err' : '');
+  clearTimeout(t._h);
+  t._h = setTimeout(() => t.className = 'toast', 3500);
+}
+
+// Değişiklik isteği (token ile)
+async function api(path, body) {
+  const r = await fetch(path, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json', 'X-Ceky-Token': TOKEN},
+    body: JSON.stringify(body || {})
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+  return data;
+}
+
+// ==================== KORUMA DURUMU ====================
+
+const NET_TEXT = {
+  ok: ['ok', 'erişilebilir'],
+  intercepted: ['warn', 'araya giriliyor'],
+  blocked: ['bad', 'erişilemiyor'],
+  unknown: ['', '—'],
+  '': ['', 'kontrol ediliyor']
+};
+
+function renderState(s) {
+  state = s;
+  const p = s.protection;
+  const box = $('protect');
+  let cls = 'off', title, sub, btn;
+  const indep = 'Tüm alan adları Google, Cloudflare veya internet sağlayıcınızın DNS\'i olmadan, doğrudan kök sunuculardan başlayarak çözülüyor.';
+
+  if (p.active) {
+    cls = 'on'; title = 'Koruma AKTİF';
+    sub = indep; btn = 'Korumayı Kapat';
+  } else if (p.wanted && p.suspended) {
+    cls = 'warn'; title = 'Güvenli mod';
+    sub = p.reason; btn = 'Korumayı Kapat';
+  } else if (p.wanted) {
+    cls = 'warn'; title = 'Koruma bekliyor';
+    sub = p.reason || 'Kök sunuculara erişim kontrol ediliyor…'; btn = 'Korumayı Kapat';
+  } else {
+    title = 'Koruma KAPALI';
+    sub = 'Bilgisayarınız şu an eski DNS ayarlarını kullanıyor. Açtığınızda ayarlarınız yedeklenir ve istediğiniz an birebir geri yüklenir.';
+    btn = 'Korumayı Aç';
+  }
+  box.className = 'protect ' + cls;
+  $('shieldIcon').textContent = cls === 'on' ? '🛡️' : cls === 'warn' ? '⚠️' : '⭕';
+  $('protectTitle').textContent = title;
+  $('protectSub').textContent = sub;
+  const pb = $('protectBtn');
+  pb.textContent = btn;
+  pb.className = 'btn big ' + (p.wanted ? 'danger' : 'primary');
+  pb.disabled = !s.admin;
+  pb.title = s.admin ? '' : 'Yönetici izni gerekli';
+
+  // Ağ durumu
+  const n = s.network;
+  let netCls, netTxt;
+  if (n.udp === 'ok') { netCls = 'ok'; netTxt = '✓ erişilebilir (UDP)'; }
+  else if (n.tcp === 'ok') { netCls = 'warn'; netTxt = n.udp === 'intercepted' ? '⚠ İSS UDP\'ye müdahale ediyor → TCP ile aşılıyor' : '⚠ UDP kapalı → TCP kullanılıyor'; }
+  else if (!n.udp) { netCls = ''; netTxt = 'kontrol ediliyor…'; }
+  else { netCls = 'bad'; netTxt = '✗ ' + (n.udp === 'intercepted' ? 'ağınız DNS trafiğine müdahale ediyor' : 'erişilemiyor'); }
+  $('chipNet').className = 'chip ' + netCls;
+  $('chipNet').innerHTML = '🌐 Kök sunucular: <b>' + escHtml(netTxt) + '</b>';
+
+  const dns = (s.systemDns || []).join(', ') || '—';
+  $('chipDNS').className = 'chip ' + (p.active ? 'ok' : '');
+  $('chipDNS').innerHTML = '🖥️ Sistem DNS\'i: <b>' + escHtml(dns) + '</b>';
+
+  // Reklam engelleme
+  $('adsToggle').checked = s.blocklist.enabled;
+  $('adsRules').textContent = s.blocklist.enabled
+    ? (s.blocklist.loading && !s.blocklist.rules ? '(yükleniyor…)' : '(' + s.blocklist.rules.toLocaleString('tr-TR') + ' kural)')
+    : '(kapalı)';
+  $('chipAds').className = 'chip ' + (s.blocklist.enabled ? 'ok' : '');
+
+  // Kalıcı kurulum
+  $('chipService').innerHTML = '⚙️ Kalıcı kurulum: <b>' + (s.mode === 'service' ? 'kurulu, arka planda çalışıyor' : s.serviceInstalled ? 'kurulu' : 'yok') + '</b>';
+  $('installBtn').style.display = (s.mode === 'app' && s.admin && !s.serviceInstalled) ? '' : 'none';
+  $('quitBtn').style.display = s.mode === 'app' ? '' : 'none';
+
+  // Uyarılar
+  const notes = [];
+  if (!s.admin) notes.push('Ceky Resolver yönetici izni olmadan çalışıyor; sistem DNS ayarı değiştirilemez. Programı kapatıp "Yönetici olarak çalıştır" ile açın.');
+  if (n.udp === 'intercepted' && n.tcp !== 'ok') notes.push('Ağınızdaki bir cihaz (genellikle internet sağlayıcısı) DNS trafiğini ele geçirip kendi yanıtlarını veriyor ve TCP de kapalı. Bu ağda bağımsız çözümleme mümkün değil; internetiniz kesilmesin diye eski DNS kullanılıyor.');
+  const nt = $('notice');
+  nt.innerHTML = notes.map(escHtml).join('<br><br>');
+  nt.className = 'notice' + (notes.length ? ' show' : '');
+
+  // İzin listesi
+  const al = s.blocklist.allowlist || [];
+  $('allowList').innerHTML = al.length ? al.map(d =>
+    '<li class="domain-item"><span class="domain-name">' + escHtml(d) + '</span>' +
+    '<button class="btn small" data-unallow="' + escHtml(d) + '" title="İzin listesinden çıkar">✕</button></li>').join('')
+    : '<li class="domain-item empty">Boş</li>';
+
+  $('listenInfo').innerHTML = 'DNS: ' + (s.listen || []).map(a => escHtml(a.indexOf(':') >= 0 ? '[' + a + ']' : a)).join(', ') +
+    '<br>Veri klasörü: ' + escHtml(s.dataDir);
+}
+
+$('protectBtn').onclick = async () => {
+  if (!state) return;
+  const on = !state.protection.wanted;
+  $('protectBtn').disabled = true;
+  $('protectBtn').textContent = on ? 'Açılıyor…' : 'Kapatılıyor…';
+  try {
+    renderState(await api('/api/app/protection', {enabled: on}));
+    toast(on ? (state.protection.active ? '🛡️ Koruma açıldı' : 'Koruma, kök sunuculara erişilince açılacak') : 'Koruma kapatıldı, eski DNS ayarları geri yüklendi');
+  } catch (e) { toast('Hata: ' + e.message, true); }
+  $('protectBtn').disabled = !state.admin;
+};
+
+$('adsToggle').onchange = async e => {
+  try { renderState(await api('/api/app/blocklist', {enabled: e.target.checked})); }
+  catch (err) { toast('Hata: ' + err.message, true); }
+};
+
+$('installBtn').onclick = async () => {
+  if (!confirm('Ceky Resolver kalıcı olarak kurulsun mu?\n\nProgram sistem klasörüne kopyalanır ve bilgisayar her açıldığında arka planda otomatik başlar. Kaldırmak için: ceky-resolver uninstall')) return;
+  try {
+    await api('/api/app/install');
+    toast('Kuruluyor… sayfa birkaç saniye içinde yeniden bağlanacak');
+  } catch (e) { toast('Hata: ' + e.message, true); }
+};
+
+$('quitBtn').onclick = async () => {
+  if (!confirm('Ceky Resolver kapatılsın mı?\n\nDNS ayarlarınız eski haline getirilecek.')) return;
+  try {
+    await api('/api/app/quit');
+    quitting = true;
+    $('overlay').className = 'overlay show';
+  } catch (e) { toast('Hata: ' + e.message, true); }
+};
+
+$('flushBtn').onclick = async () => {
+  try { await api('/api/app/flush'); toast('Önbellek temizlendi'); }
+  catch (e) { toast('Hata: ' + e.message, true); }
+};
+
+$('allowForm').onsubmit = async e => {
+  e.preventDefault();
+  const d = $('allowDomain').value.trim();
+  if (!d) return;
+  try {
+    renderState(await api('/api/app/allow', {domain: d, allowed: true}));
+    $('allowDomain').value = '';
+    toast(d + ' artık engellenmeyecek');
+  } catch (err) { toast('Hata: ' + err.message, true); }
+};
+
+document.addEventListener('click', async e => {
+  const t = e.target.closest('[data-allow],[data-unallow]');
+  if (!t) return;
+  const allow = t.hasAttribute('data-allow');
+  const d = t.getAttribute(allow ? 'data-allow' : 'data-unallow');
+  try {
+    renderState(await api('/api/app/allow', {domain: d, allowed: allow}));
+    toast(allow ? d + ' artık engellenmeyecek' : d + ' izin listesinden çıkarıldı');
+  } catch (err) { toast('Hata: ' + err.message, true); }
+});
+
+// ==================== BAĞLANTI TESTİ ====================
+
+const KIND_LABEL = {root: 'Kök', tld: 'TLD', auth: 'Yetkili'};
+
+$('testForm').onsubmit = async e => {
+  e.preventDefault();
+  const domain = $('testDomain').value.trim() || 'example.com';
+  const btn = $('testBtn');
+  btn.disabled = true; btn.textContent = 'Çözülüyor…';
+  $('trace').innerHTML = '<div style="color:var(--text3)">Kök sunucudan başlanıyor…</div>';
+  try {
+    const r = await api('/api/app/test', {domain});
+    let html = '';
+    for (const st of r.steps || []) {
+      const indent = st.depth > 0 ? 'padding-left:' + Math.min(st.depth, 4) * 12 + 'px' : '';
+      html += '<div class="trace-step" style="' + indent + '">' +
+        '<span class="kind ' + escHtml(st.kind) + '">' + escHtml(KIND_LABEL[st.kind] || st.kind) + '</span>' +
+        '<span class="desc"><b>' + escHtml(st.zone || '.') + '</b> @ ' + escHtml(st.server) + ' (' + escHtml(st.proto) + ') — ' +
+        escHtml(st.name) + ' ' + escHtml(st.qtype) + ': ' + escHtml(st.result) + '</span>' +
+        '<span class="ms">' + st.ms.toFixed(0) + ' ms</span></div>';
+    }
+    let summary;
+    if (r.rcode === 'NOERROR' && r.answers && r.answers.length) {
+      summary = '✅ <b>' + escHtml(r.domain) + '</b> → ' + r.answers.map(escHtml).join(', ') +
+        ' <span style="color:var(--text3)">(' + (r.steps || []).length + ' sunucu, ' + r.ms.toFixed(0) + ' ms — hiçbir aracı DNS kullanılmadı)</span>';
+    } else if (r.rcode === 'NXDOMAIN') {
+      summary = '∅ <b>' + escHtml(r.domain) + '</b> diye bir alan adı yok (NXDOMAIN).';
+    } else if (r.rcode === 'NOERROR') {
+      summary = 'ⓘ <b>' + escHtml(r.domain) + '</b> var ama IPv4 adresi yok.';
+    } else {
+      summary = '✗ <b>' + escHtml(r.domain) + '</b> çözülemedi. Kök sunuculara erişimi yukarıdaki "Kök sunucular" göstergesinden kontrol edin.';
+    }
+    $('trace').innerHTML = html + '<div class="trace-summary">' + summary + '</div>';
+  } catch (err) {
+    $('trace').innerHTML = '<div class="trace-summary">✗ ' + escHtml(err.message) + '</div>';
+  }
+  btn.disabled = false; btn.textContent = 'Test Et';
+};
+
+// ==================== İSTATİSTİKLER ====================
+
+// Animasyonlu sayaç
+function animateValue(el, newVal, decimals = 0) {
+  const current = parseFloat(el.dataset.v || '0');
+  el.dataset.v = newVal;
+  if (Math.abs(current - newVal) < 0.01) return;
+  const steps = 20;
+  const increment = (newVal - current) / steps;
+  let step = 0;
+  function tick() {
+    step++;
+    const val = step < steps ? current + increment * step : newVal;
+    el.textContent = decimals > 0 ? val.toFixed(decimals) : Math.round(val).toLocaleString('tr-TR');
+    if (step < steps) requestAnimationFrame(tick);
+  }
+  tick();
+}
+
+// QPS chart state
+const chartData = { points: [], maxPoints: 60 };
+
+function drawChart() {
+  const canvas = $('qpsChart');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.parentElement.getBoundingClientRect();
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  canvas.style.width = rect.width + 'px';
+  canvas.style.height = rect.height + 'px';
+  ctx.scale(dpr, dpr);
+
+  const W = rect.width, H = rect.height;
+  const pad = { top: 10, right: 10, bottom: 24, left: 40 };
+  const cW = W - pad.left - pad.right;
+  const cH = H - pad.top - pad.bottom;
+  ctx.clearRect(0, 0, W, H);
+
+  const pts = chartData.points;
+  if (pts.length < 2) {
+    ctx.fillStyle = '#64748b';
+    ctx.font = '12px "Segoe UI", system-ui';
+    ctx.textAlign = 'center';
+    ctx.fillText('Veri bekleniyor...', W/2, H/2);
+    return;
+  }
+
+  let maxQ = 1;
+  for (const p of pts) { if (p.q > maxQ) maxQ = p.q; }
+  maxQ = Math.ceil(maxQ * 1.2) || 1;
+
+  // Grid lines
+  ctx.strokeStyle = 'rgba(30,45,61,0.6)';
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = pad.top + (cH / 4) * i;
+    ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(pad.left + cW, y); ctx.stroke();
+    ctx.fillStyle = '#64748b'; ctx.font = '10px monospace'; ctx.textAlign = 'right';
+    const v = maxQ - (maxQ/4)*i;
+    ctx.fillText(maxQ < 8 ? v.toFixed(1).replace('.0', '') : Math.round(v), pad.left - 6, y + 3);
+  }
+
+  const toY = v => pad.top + cH - (v / maxQ) * cH;
+  const toX = i => pad.left + (i / (pts.length - 1)) * cW;
+
+  function area(key, c0, c1) {
+    ctx.beginPath();
+    ctx.moveTo(toX(0), toY(0));
+    for (let i = 0; i < pts.length; i++) ctx.lineTo(toX(i), toY(pts[i][key]));
+    ctx.lineTo(toX(pts.length-1), toY(0));
+    ctx.closePath();
+    const g = ctx.createLinearGradient(0, pad.top, 0, pad.top+cH);
+    g.addColorStop(0, c0); g.addColorStop(1, c1);
+    ctx.fillStyle = g; ctx.fill();
+  }
+  function line(key, color, width, dash) {
+    ctx.beginPath();
+    ctx.strokeStyle = color; ctx.lineWidth = width; ctx.lineJoin = 'round';
+    ctx.setLineDash(dash || []);
+    for (let i = 0; i < pts.length; i++) {
+      if (i === 0) ctx.moveTo(toX(i), toY(pts[i][key])); else ctx.lineTo(toX(i), toY(pts[i][key]));
+    }
+    ctx.stroke(); ctx.setLineDash([]);
+  }
+
+  area('b', 'rgba(239,68,68,0.3)', 'rgba(239,68,68,0.02)');
+  area('q', 'rgba(59,130,246,0.25)', 'rgba(59,130,246,0.02)');
+  line('q', '#3b82f6', 2);
+  line('b', '#ef4444', 1.5);
+  line('c', '#06b6d4', 1, [4,4]);
+
+  const last = pts[pts.length-1];
+  ctx.beginPath(); ctx.fillStyle = '#3b82f6';
+  ctx.arc(toX(pts.length-1), toY(last.q), 4, 0, Math.PI*2); ctx.fill();
+  ctx.strokeStyle = '#0a0e17'; ctx.lineWidth = 2; ctx.stroke();
+
+  // Legend
+  const legendY = H - 6;
+  ctx.font = '10px "Segoe UI", system-ui'; ctx.textAlign = 'left';
+  [['#3b82f6','Toplam',0],['#ef4444','Engellenen',76],['#06b6d4','Önbellek',172]].forEach(([c,l,x]) => {
+    ctx.fillStyle = c; ctx.fillRect(pad.left + x, legendY - 6, 12, 3);
+    ctx.fillStyle = '#94a3b8'; ctx.fillText(l, pad.left + x + 16, legendY);
+  });
+}
+
+// Status badge HTML
+function statusBadge(status) {
+  const map = {
+    resolved: ['badge-resolved','ÇÖZÜLDÜ'],
+    blocked: ['badge-blocked','ENGELLENDİ'],
+    cached: ['badge-cached','ÖNBELLEK'],
+    nxdomain: ['badge-nxdomain','YOK'],
+    error: ['badge-error','HATA'],
+    local: ['badge-local','YEREL']
+  };
+  const [cls, label] = map[status] || ['badge-resolved', status];
+  return '<span class="badge '+cls+'">'+escHtml(label)+'</span>';
+}
+
+function fmtTime(ts) {
+  if (!ts) return '—';
+  return new Date(ts).toLocaleTimeString('tr-TR', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+}
+
+let lastQuerySig = '';
+function updateQueryTable(queries) {
+  if (!queries || queries.length === 0) return;
+  // Değişiklik yoksa yeniden çizme (butonlara tıklanabilsin)
+  const sig = queries.length + '|' + queries[0].timestamp + '|' + queries[0].domain;
+  if (sig === lastQuerySig) return;
+  lastQuerySig = sig;
+  let html = '';
+  for (const q of queries) {
+    const ms = q.responseMs < 1 ? '<1' : q.responseMs.toFixed(0);
+    const color = q.responseMs < 10 ? 'var(--green)' : q.responseMs < 100 ? 'var(--orange)' : 'var(--red)';
+    const action = q.status === 'blocked'
+      ? '<button class="btn small" data-allow="' + escHtml(q.domain) + '" title="Bu alan adını engelleme">İzin ver</button>' : '';
+    html += '<tr>' +
+      '<td style="color:var(--text3);font-family:var(--mono);font-size:11px">'+fmtTime(q.timestamp)+'</td>' +
+      '<td style="font-family:var(--mono)" title="'+escHtml(q.domain)+'">'+escHtml(q.domain)+'</td>' +
+      '<td style="color:var(--text3)">'+escHtml(q.qtypeName || 'A')+'</td>' +
+      '<td>'+statusBadge(q.status)+'</td>' +
+      '<td style="font-family:var(--mono);color:var(--text2)">'+escHtml(q.answerIp||'—')+'</td>' +
+      '<td style="font-family:var(--mono);color:'+color+'">'+escHtml(ms)+' ms</td>' +
+      '<td>'+action+'</td>' +
+      '</tr>';
+  }
+  $('queryBody').innerHTML = html;
+}
+
+function updateDomainList(elementId, domains) {
+  const el = $(elementId);
+  if (!domains || domains.length === 0) {
+    el.innerHTML = '<li class="domain-item empty">Henüz veri yok</li>';
+    return;
+  }
+  el.innerHTML = domains.map(d => '<li class="domain-item">' +
+    '<span class="domain-name">'+escHtml(d.domain)+'</span>' +
+    '<span class="domain-count">'+d.count+'</span></li>').join('');
+}
+
+function msColor(ms) {
+  if (ms < 50) return 'fast';
+  if (ms < 200) return 'medium';
+  return 'slow';
+}
+
+// Önceki değerler (saniyelik fark için)
+let prev = null;
+let quitting = false;
+
+function renderStats(s) {
+  animateValue($('totalQueries'), s.totalQueries);
+  animateValue($('avgMs'), s.avgResponseMs, 1);
+  animateValue($('blockedCount'), s.blockedCount);
+  $('cacheHitRate').textContent = s.cacheHitRate.toFixed(1) + '%';
+  $('blockRate').textContent = '%' + s.blockRate.toFixed(1) + ' engelleme oranı';
+  $('cacheSub').textContent = s.cacheSize.toLocaleString('tr-TR') + ' kayıt / ' + s.cachedHits.toLocaleString('tr-TR') + ' isabet';
+  $('uptime').textContent = s.uptime;
+
+  const now = Date.now();
+  if (prev) {
+    const elapsed = (now - prev.t) / 1000;
+    if (elapsed > 0) {
+      const dq = Math.max(0, s.totalQueries - prev.q);
+      $('qps').textContent = (dq / elapsed).toFixed(1) + ' sorgu/sn';
+      chartData.points.push({
+        q: dq,
+        b: Math.max(0, s.blockedCount - prev.b),
+        c: Math.max(0, s.cachedHits - prev.c)
+      });
+      if (chartData.points.length > chartData.maxPoints) chartData.points.shift();
+    }
+  }
+  prev = {t: now, q: s.totalQueries, b: s.blockedCount, c: s.cachedHits};
+
+  $('hitRateBar').style.width = s.cacheHitRate + '%';
+  $('hitRateLabel').textContent = s.cacheHitRate.toFixed(1) + '%';
+  $('blockRateBar').style.width = Math.min(s.blockRate, 100) + '%';
+  $('blockRateLabel').textContent = s.blockRate.toFixed(1) + '%';
+  $('blockRules').textContent = s.blockRules.toLocaleString('tr-TR');
+  $('cacheEntries').textContent = s.cacheSize.toLocaleString('tr-TR');
+  $('liveClients').textContent = s.liveClients;
+
+  const types = {root:'rootMs', tld:'tldMs', auth:'authMs'};
+  for (const [key, elId] of Object.entries(types)) {
+    const el = $(elId);
+    if (s.serverStats && s.serverStats[key]) {
+      const ms = s.serverStats[key].avgMs;
+      el.textContent = ms.toFixed(1) + ' ms (' + s.serverStats[key].count + ')';
+      el.className = 'server-value ' + msColor(ms);
+    }
+  }
+  drawChart();
+}
+
+// ==================== SSE CONNECTION ====================
+
+function connectSSE() {
+  const es = new EventSource('/api/stream');
+  es.onopen = () => { $('liveDot').className = 'live-dot'; };
+  es.addEventListener('state', e => renderState(JSON.parse(e.data)));
+  es.addEventListener('stats', e => renderStats(JSON.parse(e.data)));
+  es.addEventListener('queries', e => updateQueryTable(JSON.parse(e.data)));
+  es.onerror = () => {
+    es.close();
+    $('liveDot').className = 'live-dot off';
+    if (!quitting) setTimeout(connectSSE, 3000);
+  };
+}
+
+async function refreshTop() {
+  try {
+    const [topD, topB] = await Promise.all([
+      fetch('/api/top-domains').then(r=>r.json()),
+      fetch('/api/top-blocked').then(r=>r.json())
+    ]);
+    updateDomainList('topDomains', topD);
+    updateDomainList('topBlocked', topB);
+  } catch(e) {}
+}
+
+setInterval(refreshTop, 5000);
+window.addEventListener('resize', drawChart);
+
+refreshTop();
+connectSSE();
+drawChart();
+</script>
+</body>
+</html>

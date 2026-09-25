@@ -41,7 +41,7 @@ func main() {
 	domain := "google.com"
 	query := buildQuery(domain)
 
-	conn, err := net.DialTimeout("udp", "127.0.0.1:2053", 3*time.Second)
+	conn, err := net.DialTimeout("udp", "127.0.0.1:53", 3*time.Second)
 	if err != nil {
 		fmt.Println("Bağlantı hatası:", err)
 		return

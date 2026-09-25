@@ -3,7 +3,9 @@ package main
 import (
 	"bufio"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -14,7 +16,7 @@ import (
 
 // ==================== GOROUTINE MİMARİSİ ====================
 
-// RequestContext — Gelen bir DNS isteğinin tüm bağlamı
+// RequestContext — Gelen bir UDP DNS isteğinin tüm bağlamı
 type RequestContext struct {
 	Data   []byte       // Paket verisi (kopyalanmış)
 	Size   int          // Paket boyutu
@@ -40,7 +42,63 @@ func putBuffer(buf *[]byte) {
 	bufferPool.Put(buf)
 }
 
-// handleRequest — Tek bir DNS isteğini goroutine içinde işle
+// Aynı anda işlenen sorgu sınırı (taşkın saldırılarına karşı)
+var (
+	udpSlots = make(chan struct{}, 1024)
+	tcpSlots = make(chan struct{}, 256)
+)
+
+// Konsola her sorgu için tek satır yazılsın mı? (uygulama modunda açık)
+var consoleQueryLog bool
+
+// CGNAT (100.64.0.0/10) — bazı mobil/ev ağlarında yerel adres olarak kullanılır
+var cgnatNet = &net.IPNet{IP: net.IPv4(100, 64, 0, 0), Mask: net.CIDRMask(10, 32)}
+
+// clientAllowed — açık çözümleyici (open resolver) olup kötüye kullanılmamak için
+// varsayılan olarak yalnızca yerel ağdan gelen sorgular kabul edilir
+func clientAllowed(ip net.IP) bool {
+	if cfg.AllowPublicClients {
+		return true
+	}
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || cgnatNet.Contains(ip)
+}
+
+// serveUDP — UDP ana döngüsü: her istek ayrı goroutine'de işlenir
+func serveUDP(conn *net.UDPConn) {
+	for {
+		bufPtr := getBuffer()
+		buf := *bufPtr
+
+		n, source, err := conn.ReadFromUDP(buf)
+		if err != nil {
+			putBuffer(bufPtr)
+			if errors.Is(err, net.ErrClosed) {
+				return
+			}
+			continue
+		}
+		if n < 12 || !clientAllowed(source.IP) {
+			putBuffer(bufPtr)
+			continue
+		}
+
+		packetData := make([]byte, n)
+		copy(packetData, buf[:n])
+		putBuffer(bufPtr)
+
+		select {
+		case udpSlots <- struct{}{}:
+		default:
+			continue // Aşırı yük — paketi düşür, istemci tekrar dener
+		}
+		go func() {
+			defer func() { <-udpSlots }()
+			handleRequest(RequestContext{Data: packetData, Size: n, Source: source, Conn: conn})
+		}()
+	}
+}
+
+// handleRequest — Tek bir UDP DNS isteğini goroutine içinde işle
 func handleRequest(ctx RequestContext) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -48,97 +106,249 @@ func handleRequest(ctx RequestContext) {
 		}
 	}()
 
-	if ctx.Size < 12 {
-		return
+	response := handleDNSMessage(ctx.Data[:ctx.Size], "udp", ctx.Source.IP.String(), true)
+	if response != nil {
+		ctx.Conn.WriteToUDP(response, ctx.Source)
+	}
+}
+
+// ==================== ORTAK SORGU İŞLEYİCİ ====================
+
+// handleDNSMessage — UDP / TCP / DoT / DoH için ortak işleyici. Yanıt paketini döndürür
+// (nil = yanıt verme). overUDP ise yanıt, istemcinin kabul ettiği boyuta göre kırpılır.
+func handleDNSMessage(raw []byte, proto, client string, overUDP bool) []byte {
+	start := time.Now()
+
+	req, err := parseMessage(raw)
+	if err != nil {
+		if len(raw) >= 12 && raw[2]&0x80 == 0 {
+			return buildErrorReply(raw, rcodeFormErr)
+		}
+		return nil
+	}
+	if req.Header.Flags&flagQR != 0 {
+		return nil // Yanıt paketlerine yanıt verilmez
 	}
 
-	// Header ve soru kısmını ayrıştır
-	header := parseHeader(ctx.Data[:12])
-	question, _ := parseQuestion(ctx.Data[:ctx.Size], 12)
+	limit := 0
+	if overUDP {
+		limit = min(max(ednsSize(req), 512), 4096)
+	}
+	if req.Header.Flags&flagOpcode != 0 {
+		return buildReply(req, rcodeNotImp, nil, nil, limit)
+	}
+	if len(req.Questions) != 1 {
+		return buildReply(req, rcodeFormErr, nil, nil, limit)
+	}
+	q := req.Questions[0]
+	if q.QClass != classIN {
+		return buildReply(req, rcodeNotImp, nil, nil, limit)
+	}
 
-	fmt.Printf("\n╔══ Yeni İstek ══════════════════════════════\n")
-	fmt.Printf("║ Kaynak:  %s\n", ctx.Source)
-	fmt.Printf("║ ID:      0x%04x\n", header.ID)
-	fmt.Printf("║ Sorgu:   %s (tip: %d)\n", question.Name, question.QType)
+	metrics.IncrementTotal()
+	ans, status := answerQuery(q)
+	duration := time.Since(start)
+
+	if status != "blocked" {
+		metrics.AddResolveTime(duration)
+	}
+	if status == "cached" {
+		metrics.IncrementCached()
+	}
+
+	entry := QueryLogEntry{
+		Timestamp:  start,
+		Domain:     normalizeName(q.Name),
+		QType:      q.QType,
+		QTypeName:  qtypeName(q.QType),
+		ResponseMs: float64(duration.Microseconds()) / 1000,
+		Status:     status,
+		Source:     proto,
+		ClientIP:   client,
+	}
+	for _, rr := range ans.Records {
+		if ip := recordIP(rr); ip != "" {
+			entry.AnswerIP = ip
+			break
+		}
+	}
+	if queryLog != nil {
+		queryLog.Add(entry)
+	}
+	logQuery(entry)
+
+	return buildReply(req, ans.Rcode, ans.Records, ans.Authority, limit)
+}
+
+// answerQuery — sırasıyla: yerel yanıt → reklam engeli → rekürsif çözümleme
+func answerQuery(q DNSQuestion) (Answer, string) {
+	name := normalizeName(q.Name)
+
+	if ans, ok := localAnswer(name, q.QType); ok {
+		return ans, "local"
+	}
 
 	// 🛡️ Reklam Engelleme Kontrolü
-	if blocker != nil && blocker.IsBlocked(question.Name) {
-		fmt.Printf("║ 🛡️ ENGELLENDİ: %s (reklam/takipçi)\n", question.Name)
-		response := buildBlockedResponse(ctx.Data[:ctx.Size])
-		ctx.Conn.WriteToUDP(response, ctx.Source)
-		fmt.Printf("╚══ Engellendi → 0.0.0.0 (%d byte) ════════\n", len(response))
-		metrics.IncrementTotal()
-		if queryLog != nil {
-			queryLog.Add(QueryLogEntry{
-				Timestamp: time.Now(), Domain: question.Name, QType: question.QType,
-				QTypeName: qtypeName(question.QType), ResponseMs: 0,
-				Status: "blocked", AnswerIP: "0.0.0.0", Source: "udp", ClientIP: ctx.Source.String(),
-			})
-		}
-		return
+	if blocker != nil && blocker.IsBlocked(name) {
+		return Answer{Rcode: rcodeSuccess, Records: blockedRecords(q)}, "blocked"
 	}
-
-	fmt.Printf("╠══ Çözümleme Başlıyor ═════════════════════\n")
-
-	// Metrik sayacı
-	metrics.IncrementTotal()
-	resolveStart := time.Now()
 
 	// Gerçek rekursif çözümleme
-	answers, err := resolve(question.Name, question.QType, 0)
-
-	resolveDuration := time.Since(resolveStart)
-	metrics.AddResolveTime(resolveDuration)
-
-	var response []byte
-	logEntry := QueryLogEntry{
-		Timestamp: time.Now(), Domain: question.Name, QType: question.QType,
-		QTypeName: qtypeName(question.QType), ResponseMs: float64(resolveDuration.Milliseconds()),
-		Source: "udp", ClientIP: ctx.Source.String(),
+	ans := resolver.Resolve(name, q.QType)
+	switch {
+	case ans.Rcode == rcodeServFail:
+		return ans, "error"
+	case ans.Rcode == rcodeNXDomain:
+		return ans, "nxdomain"
+	case ans.Cached:
+		return ans, "cached"
 	}
+	return ans, "resolved"
+}
 
-	if err != nil {
-		fmt.Printf("║ ✗ Hata: %v\n", err)
-		response = buildNXDOMAIN(ctx.Data[:ctx.Size])
-		logEntry.Status = "nxdomain"
-	} else {
-		response = buildResponse(ctx.Data[:ctx.Size], ctx.Size, answers)
-		for _, ans := range answers {
-			if ans.Type == 1 && len(ans.RData) == 4 {
-				logEntry.AnswerIP = fmt.Sprintf("%d.%d.%d.%d", ans.RData[0], ans.RData[1], ans.RData[2], ans.RData[3])
-				fmt.Printf("║ ✓ %s → %s (TTL: %d)\n", question.Name, logEntry.AnswerIP, ans.TTL)
-			}
-		}
-		if resolveDuration < 5*time.Millisecond {
-			metrics.IncrementCached()
-			logEntry.Status = "cached"
-		} else {
-			logEntry.Status = "resolved"
-		}
-	}
+var statusIcons = map[string]string{
+	"resolved": "✓", "cached": "⚡", "blocked": "🛡", "nxdomain": "∅", "error": "✗", "local": "⌂",
+}
 
-	if queryLog != nil {
-		queryLog.Add(logEntry)
-	}
-
-	_, err = ctx.Conn.WriteToUDP(response, ctx.Source)
-	if err != nil {
-		fmt.Println("Yanıt gönderme hatası:", err)
+func logQuery(e QueryLogEntry) {
+	if !consoleQueryLog {
 		return
 	}
-	fmt.Printf("╚══ Yanıt gönderildi (%d byte, %dms) ═══════\n", len(response), resolveDuration.Milliseconds())
+	answer := e.AnswerIP
+	if e.Status == "error" {
+		answer = "(çözümlenemedi)"
+	}
+	fmt.Printf("%s %s %-5s %s %s %.0fms\n", e.Timestamp.Format("15:04:05"), statusIcons[e.Status],
+		e.QTypeName, e.Domain, answer, e.ResponseMs)
+}
+
+// ==================== DİNLEYİCİLER ====================
+
+// dnsListenAddrs — bindAddr'a göre dinlenecek adresler. Varsayılanda IPv6 loopback
+// da dinlenir; böylece sistemin IPv6 DNS'i de İSS yerine Ceky'ye yönlendirilebilir.
+func dnsListenAddrs(bind string) []string {
+	switch bind {
+	case "", "127.0.0.1", "localhost":
+		return []string{"127.0.0.1", "::1"}
+	}
+	return []string{bind}
+}
+
+// startDNSListeners — UDP+TCP dinleyicilerini aç. İlk adres zorunludur,
+// diğerleri (ör. ::1) açılamazsa sessizce atlanır.
+func startDNSListeners(addrs []string, port int) ([]string, []io.Closer, error) {
+	var bound []string
+	var closers []io.Closer
+	for i, host := range addrs {
+		addr := net.JoinHostPort(host, fmt.Sprint(port))
+		udpAddr, err := net.ResolveUDPAddr("udp", addr)
+		if err != nil {
+			if i == 0 {
+				return nil, closers, err
+			}
+			continue
+		}
+		conn, err := net.ListenUDP("udp", udpAddr)
+		if err != nil {
+			if i == 0 {
+				closeAll(closers)
+				return nil, nil, err
+			}
+			continue
+		}
+		closers = append(closers, conn)
+		go serveUDP(conn)
+
+		// TCP — büyük yanıtlar (TC=1) için istemciler TCP'ye geçer
+		if ln, err := net.Listen("tcp", addr); err == nil {
+			closers = append(closers, ln)
+			go serveStream(ln, "tcp")
+		} else {
+			fmt.Printf("║ ⚠ TCP %s açılamadı: %v\n", addr, err)
+		}
+		bound = append(bound, host)
+	}
+	return bound, closers, nil
+}
+
+func closeAll(closers []io.Closer) {
+	for _, c := range closers {
+		c.Close()
+	}
+}
+
+// serveStream — TCP ve DoT bağlantılarını kabul et
+func serveStream(ln net.Listener, proto string) {
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		host, _, _ := net.SplitHostPort(conn.RemoteAddr().String())
+		if ip := net.ParseIP(host); ip == nil || !clientAllowed(ip) {
+			conn.Close()
+			continue
+		}
+		select {
+		case tcpSlots <- struct{}{}:
+		default:
+			conn.Close()
+			continue
+		}
+		go func() {
+			defer func() { <-tcpSlots }()
+			handleStreamConn(conn, proto, host)
+		}()
+	}
+}
+
+// handleStreamConn — DNS over TCP / TLS: 2-byte uzunluk önekli mesajlar
+func handleStreamConn(conn net.Conn, proto, client string) {
+	defer conn.Close()
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("║ ⚠ Goroutine panik: %v\n", r)
+		}
+	}()
+
+	reader := bufio.NewReader(conn)
+	lenBuf := make([]byte, 2)
+	for {
+		conn.SetDeadline(time.Now().Add(10 * time.Second))
+		if _, err := io.ReadFull(reader, lenBuf); err != nil {
+			return
+		}
+		msgLen := int(binary.BigEndian.Uint16(lenBuf))
+		if msgLen < 12 {
+			return
+		}
+		msg := make([]byte, msgLen)
+		if _, err := io.ReadFull(reader, msg); err != nil {
+			return
+		}
+
+		response := handleDNSMessage(msg, proto, client, false)
+		if response == nil {
+			return
+		}
+		out := binary.BigEndian.AppendUint16(make([]byte, 0, len(response)+2), uint16(len(response)))
+		if _, err := conn.Write(append(out, response...)); err != nil {
+			return
+		}
+	}
 }
 
 // ==================== DNS-over-TLS (DoT) — RFC 7858 ====================
-// Port 8853 üzerinden TLS şifreli DNS hizmeti
 
-func startDoTServer(certFile, keyFile string) {
+func startDoTServer(certFile, keyFile string) io.Closer {
 	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
 		fmt.Printf("║ ⚠ DoT: Sertifika yüklenemedi: %v\n", err)
-		fmt.Println("║   DoT devre dışı. Self-signed sertifika oluşturmak için:")
-		fmt.Println("║   openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 365 -nodes")
-		return
+		return nil
 	}
 
 	tlsConfig := &tls.Config{
@@ -146,268 +356,96 @@ func startDoTServer(certFile, keyFile string) {
 		MinVersion:   tls.VersionTLS12,
 	}
 
-	listener, err := tls.Listen("tcp", fmt.Sprintf("%s:%d", cfg.BindAddr, cfg.DoTPort), tlsConfig)
+	listener, err := tls.Listen("tcp", net.JoinHostPort(cfg.BindAddr, fmt.Sprint(cfg.DoTPort)), tlsConfig)
 	if err != nil {
 		fmt.Printf("║ ⚠ DoT dinleyici hatası: %v\n", err)
-		return
+		return nil
 	}
 
 	fmt.Printf("║ 🔒 DNS-over-TLS (DoT) aktif — port %d\n", cfg.DoTPort)
-
-	go func() {
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				continue
-			}
-			go handleDoTConnection(conn)
-		}
-	}()
-}
-
-func handleDoTConnection(conn net.Conn) {
-	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(10 * time.Second))
-
-	reader := bufio.NewReader(conn)
-
-	for {
-		// DNS over TCP: 2-byte uzunluk prefix
-		lenBuf := make([]byte, 2)
-		_, err := io.ReadFull(reader, lenBuf)
-		if err != nil {
-			return
-		}
-
-		msgLen := int(binary.BigEndian.Uint16(lenBuf))
-		if msgLen < 12 || msgLen > 4096 {
-			return
-		}
-
-		msg := make([]byte, msgLen)
-		_, err = io.ReadFull(reader, msg)
-		if err != nil {
-			return
-		}
-
-		// Header ve soru ayrıştır
-		header := parseHeader(msg[:12])
-		question, _ := parseQuestion(msg[:msgLen], 12)
-
-		fmt.Printf("\n╔══ DoT İstek ═══════════════════════════════\n")
-		fmt.Printf("║ 🔒 Kaynak: %s (şifreli)\n", conn.RemoteAddr())
-		fmt.Printf("║ ID:      0x%04x\n", header.ID)
-		fmt.Printf("║ Sorgu:   %s (tip: %d)\n", question.Name, question.QType)
-
-		// Reklam engelleme
-		if blocker != nil && blocker.IsBlocked(question.Name) {
-			fmt.Printf("║ 🛡️ ENGELLENDİ: %s\n", question.Name)
-			response := buildBlockedResponse(msg)
-			sendDoTResponse(conn, response)
-			metrics.IncrementTotal()
-			if queryLog != nil {
-				queryLog.Add(QueryLogEntry{
-					Timestamp: time.Now(), Domain: question.Name, QType: question.QType,
-					QTypeName: qtypeName(question.QType), ResponseMs: 0,
-					Status: "blocked", AnswerIP: "0.0.0.0", Source: "dot", ClientIP: conn.RemoteAddr().String(),
-				})
-			}
-			continue
-		}
-
-		fmt.Printf("╠══ Çözümleme Başlıyor ═════════════════════\n")
-		metrics.IncrementTotal()
-		resolveStart := time.Now()
-
-		answers, err := resolve(question.Name, question.QType, 0)
-		resolveDuration := time.Since(resolveStart)
-		metrics.AddResolveTime(resolveDuration)
-
-		var response []byte
-		dotLogEntry := QueryLogEntry{
-			Timestamp: time.Now(), Domain: question.Name, QType: question.QType,
-			QTypeName: qtypeName(question.QType), ResponseMs: float64(resolveDuration.Milliseconds()),
-			Source: "dot", ClientIP: conn.RemoteAddr().String(),
-		}
-
-		if err != nil {
-			response = buildNXDOMAIN(msg)
-			dotLogEntry.Status = "nxdomain"
-		} else {
-			response = buildResponse(msg, msgLen, answers)
-			if resolveDuration < 5*time.Millisecond {
-				metrics.IncrementCached()
-				dotLogEntry.Status = "cached"
-			} else {
-				dotLogEntry.Status = "resolved"
-			}
-			for _, ans := range answers {
-				if ans.Type == 1 && len(ans.RData) == 4 {
-					dotLogEntry.AnswerIP = fmt.Sprintf("%d.%d.%d.%d", ans.RData[0], ans.RData[1], ans.RData[2], ans.RData[3])
-				}
-			}
-		}
-
-		if queryLog != nil {
-			queryLog.Add(dotLogEntry)
-		}
-
-		sendDoTResponse(conn, response)
-		fmt.Printf("╚══ DoT Yanıt (%d byte, %dms) ═══════════════\n",
-			len(response), resolveDuration.Milliseconds())
-	}
-}
-
-func sendDoTResponse(conn net.Conn, response []byte) {
-	lenBuf := make([]byte, 2)
-	binary.BigEndian.PutUint16(lenBuf, uint16(len(response)))
-	conn.Write(append(lenBuf, response...))
+	go serveStream(listener, "dot")
+	return listener
 }
 
 // ==================== DNS-over-HTTPS (DoH) — RFC 8484 ====================
-// Port 8443 üzerinden HTTPS şifreli DNS hizmeti
 
-func startDoHServer(certFile, keyFile string) {
+func startDoHServer(certFile, keyFile string) io.Closer {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/dns-query", handleDoHRequest)
 
 	server := &http.Server{
-		Addr:    fmt.Sprintf("%s:%d", cfg.BindAddr, cfg.DoHPort),
-		Handler: mux,
-		TLSConfig: &tls.Config{
-			MinVersion: tls.VersionTLS12,
-		},
+		Addr:         net.JoinHostPort(cfg.BindAddr, fmt.Sprint(cfg.DoHPort)),
+		Handler:      mux,
+		TLSConfig:    &tls.Config{MinVersion: tls.VersionTLS12},
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
 	}
 
-	// Sertifika kontrolü
-	_, err := tls.LoadX509KeyPair(certFile, keyFile)
-	if err != nil {
-		fmt.Printf("║ ⚠ DoH: Sertifika yüklenemedi, HTTP modunda başlatılıyor (port %d)\n", cfg.DoHPort)
+	if _, err := tls.LoadX509KeyPair(certFile, keyFile); err != nil {
 		// TLS olmadan HTTP (geliştirme/test amaçlı)
-		httpServer := &http.Server{
-			Addr:         fmt.Sprintf("%s:%d", cfg.BindAddr, cfg.DoHPort),
-			Handler:      mux,
-			ReadTimeout:  10 * time.Second,
-			WriteTimeout: 10 * time.Second,
-		}
-		fmt.Printf("║ 🌐 DNS-over-HTTP (test) aktif — http://%s:%d/dns-query\n", cfg.BindAddr, cfg.DoHPort)
+		fmt.Printf("║ 🌐 DNS-over-HTTP (test) aktif — http://%s/dns-query\n", server.Addr)
 		go func() {
-			if err := httpServer.ListenAndServe(); err != nil {
+			if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 				fmt.Printf("║ ⚠ DoH HTTP hatası: %v\n", err)
 			}
 		}()
-		return
+		return server
 	}
 
-	fmt.Printf("║ 🔒 DNS-over-HTTPS (DoH) aktif — https://%s:%d/dns-query\n", cfg.BindAddr, cfg.DoHPort)
+	fmt.Printf("║ 🔒 DNS-over-HTTPS (DoH) aktif — https://%s/dns-query\n", server.Addr)
 	go func() {
-		if err := server.ListenAndServeTLS(certFile, keyFile); err != nil {
+		if err := server.ListenAndServeTLS(certFile, keyFile); err != nil && err != http.ErrServerClosed {
 			fmt.Printf("║ ⚠ DoH HTTPS hatası: %v\n", err)
 		}
 	}()
+	return server
 }
 
 func handleDoHRequest(w http.ResponseWriter, r *http.Request) {
 	var dnsMsg []byte
+	var err error
 
 	switch r.Method {
 	case http.MethodPost:
 		// POST: Gövde doğrudan DNS wire format
 		if r.Header.Get("Content-Type") != "application/dns-message" {
-			http.Error(w, "Content-Type must be application/dns-message", http.StatusBadRequest)
+			http.Error(w, "Content-Type must be application/dns-message", http.StatusUnsupportedMediaType)
 			return
 		}
-		var err error
-		dnsMsg, err = io.ReadAll(io.LimitReader(r.Body, 4096))
-		if err != nil {
-			http.Error(w, "Read error", http.StatusBadRequest)
-			return
-		}
-
+		dnsMsg, err = io.ReadAll(io.LimitReader(r.Body, 65535))
 	case http.MethodGet:
-		// GET: ?dns= parametresi (base64url encoded) — basitleştirilmiş
-		http.Error(w, "GET method: use POST with application/dns-message", http.StatusMethodNotAllowed)
-		return
-
+		// GET: ?dns= parametresi (base64url, dolgusuz)
+		dnsMsg, err = base64.RawURLEncoding.DecodeString(r.URL.Query().Get("dns"))
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-
-	if len(dnsMsg) < 12 {
+	if err != nil || len(dnsMsg) < 12 {
 		http.Error(w, "Invalid DNS message", http.StatusBadRequest)
 		return
 	}
 
-	// Ayrıştır
-	header := parseHeader(dnsMsg[:12])
-	question, _ := parseQuestion(dnsMsg, 12)
-
-	fmt.Printf("\n╔══ DoH İstek ═══════════════════════════════\n")
-	fmt.Printf("║ 🌐 Kaynak: %s (HTTPS)\n", r.RemoteAddr)
-	fmt.Printf("║ ID:      0x%04x\n", header.ID)
-	fmt.Printf("║ Sorgu:   %s (tip: %d)\n", question.Name, question.QType)
-
-	// Reklam engelleme
-	if blocker != nil && blocker.IsBlocked(question.Name) {
-		fmt.Printf("║ 🛡️ ENGELLENDİ: %s\n", question.Name)
-		response := buildBlockedResponse(dnsMsg)
-		w.Header().Set("Content-Type", "application/dns-message")
-		w.Write(response)
-		metrics.IncrementTotal()
-		if queryLog != nil {
-			queryLog.Add(QueryLogEntry{
-				Timestamp: time.Now(), Domain: question.Name, QType: question.QType,
-				QTypeName: qtypeName(question.QType), ResponseMs: 0,
-				Status: "blocked", AnswerIP: "0.0.0.0", Source: "doh", ClientIP: r.RemoteAddr,
-			})
-		}
+	client, _, _ := net.SplitHostPort(r.RemoteAddr)
+	if ip := net.ParseIP(client); ip == nil || !clientAllowed(ip) {
+		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
 
-	fmt.Printf("╠══ Çözümleme Başlıyor ═════════════════════\n")
-	metrics.IncrementTotal()
-	resolveStart := time.Now()
-
-	answers, err := resolve(question.Name, question.QType, 0)
-	resolveDuration := time.Since(resolveStart)
-	metrics.AddResolveTime(resolveDuration)
-
-	var response []byte
-	logEntry := QueryLogEntry{
-		Timestamp: time.Now(), Domain: question.Name, QType: question.QType,
-		QTypeName: qtypeName(question.QType), ResponseMs: float64(resolveDuration.Milliseconds()),
-		Source: "doh", ClientIP: r.RemoteAddr,
+	response := handleDNSMessage(dnsMsg, "doh", client, false)
+	if response == nil {
+		http.Error(w, "Invalid DNS message", http.StatusBadRequest)
+		return
 	}
 
-	if err != nil {
-		response = buildNXDOMAIN(dnsMsg)
-		logEntry.Status = "nxdomain"
-	} else {
-		response = buildResponse(dnsMsg, len(dnsMsg), answers)
-		if resolveDuration < 5*time.Millisecond {
-			metrics.IncrementCached()
-			logEntry.Status = "cached"
-		} else {
-			logEntry.Status = "resolved"
-		}
-		for _, ans := range answers {
-			if ans.Type == 1 && len(ans.RData) == 4 {
-				logEntry.AnswerIP = fmt.Sprintf("%d.%d.%d.%d", ans.RData[0], ans.RData[1], ans.RData[2], ans.RData[3])
-			}
+	// Önbellek süresi = en kısa TTL
+	maxAge := uint32(0)
+	if msg, err := parseMessage(response); err == nil && msg.Header.Rcode() == rcodeSuccess && len(msg.Answers) > 0 {
+		maxAge = msg.Answers[0].TTL
+		for _, rr := range msg.Answers {
+			maxAge = min(maxAge, rr.TTL)
 		}
 	}
-
-	if queryLog != nil {
-		queryLog.Add(logEntry)
-	}
-
 	w.Header().Set("Content-Type", "application/dns-message")
-	w.Header().Set("Cache-Control", fmt.Sprintf("max-age=%d", 300))
+	w.Header().Set("Cache-Control", fmt.Sprintf("max-age=%d", maxAge))
 	w.Write(response)
-
-	fmt.Printf("╚══ DoH Yanıt (%d byte, %dms) ═══════════════\n",
-		len(response), resolveDuration.Milliseconds())
 }

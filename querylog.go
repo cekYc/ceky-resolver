@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+	"sort"
 	"sync"
 	"time"
 )
@@ -14,7 +16,7 @@ type QueryLogEntry struct {
 	QType      uint16    `json:"qtype"`
 	QTypeName  string    `json:"qtypeName"`
 	ResponseMs float64   `json:"responseMs"`
-	Status     string    `json:"status"` // "resolved", "blocked", "cached", "nxdomain", "error"
+	Status     string    `json:"status"` // "resolved", "blocked", "cached", "nxdomain", "error", "local"
 	AnswerIP   string    `json:"answerIp"`
 	Source     string    `json:"source"` // "udp", "dot", "doh"
 	ClientIP   string    `json:"clientIp"`
@@ -81,7 +83,13 @@ func (ql *QueryLog) Add(entry QueryLogEntry) {
 	ql.writeIdx = (ql.writeIdx + 1) % ql.maxSize
 	ql.totalCount++
 
-	// Domain sayacı
+	// Domain sayacı (bellek sınırlı: çok büyürse tek seferlik domain'ler atılır)
+	if len(ql.domainCounts) > maxTrackedDomains {
+		pruneCounts(ql.domainCounts)
+	}
+	if len(ql.blockedCounts) > maxTrackedDomains {
+		pruneCounts(ql.blockedCounts)
+	}
 	ql.domainCounts[entry.Domain]++
 	if entry.Status == "blocked" {
 		ql.blockedCounts[entry.Domain]++
@@ -119,6 +127,19 @@ func (ql *QueryLog) Add(entry QueryLogEntry) {
 		if entry.Status == "cached" {
 			ql.currentPoint.Cached = 1
 		}
+	}
+}
+
+const maxTrackedDomains = 20000
+
+func pruneCounts(m map[string]int) {
+	for k, v := range m {
+		if v <= 1 {
+			delete(m, k)
+		}
+	}
+	if len(m) > maxTrackedDomains { // Hâlâ büyükse sıfırla
+		clear(m)
 	}
 }
 
@@ -172,13 +193,7 @@ func (ql *QueryLog) TimeSeries() []TimeSeriesPoint {
 	}
 
 	// Zamana göre sırala
-	for i := 0; i < len(result); i++ {
-		for j := i + 1; j < len(result); j++ {
-			if result[j].Timestamp < result[i].Timestamp {
-				result[i], result[j] = result[j], result[i]
-			}
-		}
-	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Timestamp < result[j].Timestamp })
 
 	return result
 }
@@ -236,22 +251,27 @@ func (ql *QueryLog) Uptime() time.Duration {
 	return time.Since(ql.startedAt)
 }
 
+// QType numaraları → isimler
+var qtypeNames = map[uint16]string{
+	1:   "A",
+	2:   "NS",
+	5:   "CNAME",
+	6:   "SOA",
+	12:  "PTR",
+	15:  "MX",
+	16:  "TXT",
+	28:  "AAAA",
+	33:  "SRV",
+	41:  "OPT",
+	64:  "SVCB",
+	65:  "HTTPS",
+	255: "ANY",
+}
+
 // QType numarasını isme çevir
 func qtypeName(qtype uint16) string {
-	names := map[uint16]string{
-		1:  "A",
-		2:  "NS",
-		5:  "CNAME",
-		6:  "SOA",
-		15: "MX",
-		16: "TXT",
-		28: "AAAA",
-		33: "SRV",
-		41: "OPT",
-		65: "HTTPS",
-	}
-	if name, ok := names[qtype]; ok {
+	if name, ok := qtypeNames[qtype]; ok {
 		return name
 	}
-	return "?"
+	return fmt.Sprintf("TYPE%d", qtype)
 }
