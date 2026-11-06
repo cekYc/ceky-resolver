@@ -245,3 +245,31 @@ func TestSingleflightCoalesces(t *testing.T) {
 		t.Fatalf("eşzamanlı özdeş sorgular birleştirilmeli; köke %d sorgu gitti", n)
 	}
 }
+
+// Exercise the fallback directly even when shared-port binding succeeds locally.
+func TestSeparateMockPortsUDPAndTCP(t *testing.T) {
+	handler := func(q DNSQuestion) *mockReply {
+		return &mockReply{aa: true, answers: []DNSRecord{rrA(q.Name, "1.2.3.4")}}
+	}
+	port, servers := startMockServersWithAttempts(t, map[string]func(DNSQuestion) *mockReply{
+		"127.0.0.2": handler,
+		"127.0.0.3": handler,
+	}, 0)
+	r := testResolver(port)
+	query := buildQuery("example.test", typeA)
+	for ip := range servers {
+		for _, transport := range []struct {
+			name     string
+			exchange func(string, []byte) ([]byte, error)
+		}{{"udp", r.exchangeUDP}, {"tcp", r.exchangeTCP}} {
+			raw, err := transport.exchange(ip, query)
+			if err != nil {
+				t.Fatalf("%s %s: %v", ip, transport.name, err)
+			}
+			msg, err := parseMessage(raw)
+			if err != nil || len(msg.Answers) != 1 || recordIP(msg.Answers[0]) != "1.2.3.4" {
+				t.Fatalf("%s %s: invalid answer: %v", ip, transport.name, err)
+			}
+		}
+	}
+}
